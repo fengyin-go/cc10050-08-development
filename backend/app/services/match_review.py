@@ -2,6 +2,10 @@
 
 数据链路位置：裁决层，消费规格匹配器与失败隔离区升级的待复核记录，
 通过的结论回填匹配记录，驳回的样本回流失败隔离区。
+
+认领闭环约束：本模块的状态流转动作（通过/驳回）与复核认领工作台共用同一套资格闸门——
+只有取得「已取得资格」认领、且证据版本仍有效的匹配才能提交结论，并由规格匹配器
+回填这条可对账的匹配结果，避免通用资源路由绕开认领规则直接改状态。
 """
 from __future__ import annotations
 
@@ -9,6 +13,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.services.base import BaseModuleService
+from app.services.review_workbench import QUALIFIED
+from app.services.sku_match import SkuMatchService
 from app.store import store
 
 
@@ -21,6 +27,47 @@ class MatchReviewService(BaseModuleService):
     STATUS_ORDER = ["待复核", "已通过", "已驳回"]
     ACTION_RULES = {"通过记录": "已通过", "驳回记录": "已驳回"}
     NEGATIVE_ACTIONS = ["驳回记录"]
+
+    def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
+        """覆写通用动作：通过/驳回必须持有有效认领资格并通过证据版本对账。"""
+        if action not in self.ACTION_RULES:
+            return super().run_action(entry_id, action)
+        entry = store.find(self.MODULE, entry_id)
+        if entry is None:
+            return None, f"{self.ENTITY} {entry_id} 不存在或已归档"
+        if entry.get("status") != "待复核":
+            return None, "记录不处于待复核状态，不能重复提交结论"
+        order_no = str(entry.get("认领单", "") or "")
+        qualification = str(entry.get("认领资格", "") or "")
+        if qualification != QUALIFIED or not order_no:
+            return None, (
+                f"该匹配未取得有效认领资格（当前：{qualification or '未认领'}），"
+                "不能提交结论；请先在复核认领工作台认领并确认证据版本"
+            )
+        evidence_id = str(entry.get("证据版本", ""))
+        evidence = next(
+            (e for e in store.rows("candidate_evidence")
+             if e.get("证据版本") == evidence_id),
+            None,
+        )
+        if evidence is None or evidence.get("status") != "有效":
+            return None, f"证据版本 {evidence_id} 已撤回，结论被拦截，请重新认领替换后的候选"
+        match_id = int(entry.get("匹配记录", 0))
+        approved = action == "通过记录"
+        result = SkuMatchService().backfill_reviewed_match(
+            match_id,
+            approved=approved,
+            evidence_version=evidence_id,
+            claim_order_no=order_no,
+        )
+        if not result.get("ok"):
+            return None, result.get("message", "规格匹配器回填失败")
+        entry["status"] = self.ACTION_RULES[action]
+        entry["pending"] = False
+        entry["复核时间"] = datetime.now(timezone.utc).isoformat()
+        if not approved:
+            entry["abnormal"] = True
+        return entry, f"{self.ENTITY}已{action}，并回填匹配记录 {match_id}"
 
     # ---- 业务扩展：复核办结与结论回填 ----
 

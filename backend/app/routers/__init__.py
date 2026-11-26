@@ -1,6 +1,7 @@
-"""业务路由汇总：所有模块共用一套资源路由，由领域服务完成分派。"""
+"""业务路由汇总：专用工作台路由先注册，通用模块资源路由兜底。"""
 from __future__ import annotations
 
-from app.routers import resource
+from app.routers import resource, review_workbench
 
-ROUTERS = [resource]
+# review_workbench 的固定路径必须排在通用 /api/{module} 动态路由之前
+ROUTERS = [review_workbench, resource]

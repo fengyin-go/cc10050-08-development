@@ -71,6 +71,73 @@ class SkuMatchService(BaseModuleService):
         })
         return {"ok": True, "message": "已升级人工复核", "review_id": rid}
 
+    def backfill_reviewed_match(
+        self,
+        entry_id: int,
+        *,
+        approved: bool,
+        evidence_version: str,
+        claim_order_no: str,
+    ) -> dict[str, Any]:
+        """回填人工复核结论：只写回这条可对账的匹配结果。
+
+        对账条件：匹配记录存在、仍处人工复核、且当前证据版本与认领单条目锁定的
+        证据版本一致。证据版本被上游替换/撤回的旧匹配不允许写回，必须走重新认领。
+        """
+        entry = store.find(self.MODULE, entry_id)
+        if entry is None:
+            return {"ok": False, "message": f"匹配记录 {entry_id} 不存在，无可对账目标"}
+        if entry.get("status") != "人工复核":
+            return {"ok": False, "message": f"匹配记录 {entry_id} 不处于人工复核，拒绝回填"}
+        if str(entry.get("证据版本", "")) != str(evidence_version):
+            return {
+                "ok": False,
+                "message": (
+                    f"证据版本不一致：认领单锁定 {evidence_version}，"
+                    f"匹配记录当前为 {entry.get('证据版本', '')}，拒绝回填"
+                ),
+            }
+        evidence = next(
+            (e for e in store.rows("candidate_evidence")
+             if e.get("证据版本") == evidence_version),
+            None,
+        )
+        if evidence is None or evidence.get("status") != "有效":
+            return {
+                "ok": False,
+                "message": f"证据版本 {evidence_version} 已撤回，规格匹配器拒绝回填",
+            }
+        if approved:
+            entry["status"] = "已匹配"
+            entry["pending"] = False
+            entry["匹配状态"] = "人工复核通过并回填"
+        else:
+            entry["status"] = "匹配失败"
+            entry["abnormal"] = True
+            entry["匹配状态"] = "人工复核驳回"
+            rows = store.rows("failure_quarantine")
+            fid = max((int(r.get("id", 0)) for r in rows), default=0) + 1
+            rows.append({
+                "id": fid,
+                "样本指纹": f"match-{entry_id}",
+                "失败阶段": "匹配",
+                "失败原因": f"人工复核驳回（认领单 {claim_order_no}）",
+                "隔离时间": datetime.now(timezone.utc).isoformat(),
+                "重试次数": "0",
+                "status": "待处理",
+                "pending": True,
+                "abnormal": False,
+            })
+        entry["回填认领单"] = claim_order_no
+        entry["回填时间"] = datetime.now(timezone.utc).isoformat()
+        return {
+            "ok": True,
+            "message": f"匹配记录 {entry_id} 已按认领单 {claim_order_no} 回填",
+            "match_id": entry_id,
+            "evidence_version": evidence_version,
+            "result_status": entry["status"],
+        }
+
     def apply_review_result(self, entry_id: int, approved: bool) -> dict[str, Any]:
         """应用复核结论：通过则回填档案，驳回则进失败隔离。"""
         entry = store.find(self.MODULE, entry_id)

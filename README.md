@@ -16,9 +16,13 @@
 │   └── vite.config.ts        dev server 配置（open: false）
 ├── backend/                  FastAPI（Python） 后端
 │   ├── app/routers/resource.py  通用查询/导出/登记/动作接口
+│   ├── app/routers/review_workbench.py  复核认领工作台专用接口
 │   ├── app/services/<key>.py    每个模块独立领域逻辑
+│   ├── app/services/review_workbench.py 候选证据版本/认领单/结论回填闭环
 │   ├── app/services/base.py     共享服务骨架
-│   └── app/store.py          内存数据仓库与示例数据
+│   ├── app/scenario_seed.py     认领闭环剧本数据（6 条候选与证据版本）
+│   ├── app/store.py          内存数据仓库与示例数据
+│   └── tests_scenario_e2e.py 认领闭环端到端剧本复做（.venv/bin/python -I 运行）
 ├── .gitignore
 └── docker-compose.yml
 ```
@@ -70,6 +74,32 @@ npm run dev
 | 变价历史流水 | `change_history` | 变价记录 | 商品标识、旧价格、新价格 |
 | 人工复核队列 | `match_review` | 复核记录 | 记录编号、匹配记录、复核结论 |
 | 采集量指标 | `collect_metrics` | 指标记录 | 统计时间、站点名称、抓取量 |
+
+## 人工复核认领工作台
+
+入口：前端导航「复核认领工作台」（路由 `/review-workbench`），后端前缀 `/api/review-workbench`。
+
+闭环：候选证据版本（`candidate_evidence`）→ 复核队列匹配清单（`match_review`，每条带
+证据版本与归一规格）→ 批量认领生成认领单（`claim_order`，逐条判定资格）→ 取得有效资格的
+条目提交结论 → 规格匹配器（`sku_match`）按「匹配记录 id + 证据版本」只回填这条可对账结果。
+
+关键规则：
+
+- 候选结果按证据版本、候选归一规格筛选并分页；重新获取只返回仍待复核、证据有效且仍满足
+  规格的条目，已确认或证据撤回的条目不进入交付范围。
+- 同一待复核匹配只能由一个复核员取得有效资格；证据版本被撤回的条目进入「等待重确认」，
+  重确认不通过则转「未取得资格」，均不能写回；无复核资格角色直接未取得资格。
+- 旧证据版本撤回时记录失效原因与替换去向；通用资源路由的通过/驳回动作同样受认领资格闸门约束。
+
+剧本复做（6 条候选、每页 4 条，第二页为 R1/R3；R1 随后被更正为两瓶组合装 R2）：
+
+```bash
+cd backend
+.venv/bin/python -I tests_scenario_e2e.py
+```
+
+也可在页面点「模拟上游更正 R1」「批量认领」「重新确认」「提交通过/驳回」逐步复做，
+点「复位剧本」回到初始快照。
 
 ## 约定
 

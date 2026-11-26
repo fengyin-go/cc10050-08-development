@@ -27,6 +27,15 @@ class Store:
                 return row
         return None
 
+    def replace_rows(self, module: str, rows: list[dict[str, Any]]) -> None:
+        """整表替换：用于剧本复位，把认领/撤回等运行态改动还原到初始快照。"""
+        self._tables[module] = [dict(row) for row in rows]
+
+    def reset_tables(self, snapshot: dict[str, list[dict[str, Any]]]) -> None:
+        """按快照复位指定的一批表，未列出的表保持不动。"""
+        for module, rows in snapshot.items():
+            self._tables[module] = [dict(row) for row in rows]
+
     def overview(self) -> dict[str, object]:
         modules: list[dict[str, object]] = []
         for name in self.module_names():
